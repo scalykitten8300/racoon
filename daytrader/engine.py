@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .config import default_data_dir
-from .market_data import fetch_history
+from .market_data import fetch_history_with_source
 from .strategy import Signal, generate_signals
 
 
@@ -63,12 +63,12 @@ class PaperTradingEngine:
         if not 0 < risk_fraction <= 1:
             raise ValueError("risk_fraction must be between 0 (exclusive) and 1 (inclusive).")
 
-        candles = fetch_history(symbol)
+        candles, source = fetch_history_with_source(symbol)
         closes = [c.close for c in candles]
         signals = generate_signals(closes)
 
         for point in signals:
-            if point.signal is Signal.BUY:
+            if point.signal is Signal.BUY and self.portfolio.shares == 0:
                 spend = self.portfolio.cash * risk_fraction
                 if spend < 1:
                     continue
@@ -92,6 +92,7 @@ class PaperTradingEngine:
 
         return {
             "symbol": symbol,
+            "data_source": source,
             "last_price": last_price,
             "cash": self.portfolio.cash,
             "shares": self.portfolio.shares,

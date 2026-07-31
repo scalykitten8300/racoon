@@ -52,7 +52,13 @@ def cmd_trade(args: argparse.Namespace) -> int:
     engine = PaperTradingEngine(username, record.starting_balance, data_dir=args.data_dir)
     result = engine.run_session(args.symbol, risk_fraction=args.risk)
 
+    source_labels = {
+        "yfinance": "REAL market data (Yahoo Finance)",
+        "coingecko": "REAL market data (CoinGecko)",
+        "synthetic": "SYNTHETIC data (real providers unreachable)",
+    }
     print(f"\nDay-trading session for {username} on {args.symbol}")
+    print(f"Data source: {source_labels.get(result['data_source'], result['data_source'])}")
     print("=" * 60)
     recent_trades = result["trades"][-args.show_trades:] if args.show_trades else result["trades"]
     if not recent_trades:

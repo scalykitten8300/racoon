@@ -1,16 +1,45 @@
 """Market data acquisition with graceful fallback to a synthetic feed.
 
-Real-time/historical data is fetched via yfinance when it is installed
-and network access is available. When either is missing (offline
-sandbox, no dependency, provider outage, unknown ticker, ...) we fall
-back to a deterministic synthetic random-walk feed so the rest of the
-tool (indicators, signals, paper trading) keeps working end to end.
+Historical data is fetched from real providers, in order:
+
+1. ``yfinance`` (stocks/ETFs) - only used if the package is installed
+   and the provider is reachable.
+2. CoinGecko's public REST API (crypto) - no API key required, uses
+   only the standard library.
+
+If both real sources are unavailable (offline sandbox, provider
+outage/blocking, unknown symbol, ...) we fall back to a deterministic
+synthetic random-walk feed so the rest of the tool (indicators,
+signals, paper trading) keeps working end to end. Callers can check
+``fetch_history_with_source`` to know whether a result is real market
+data or the synthetic fallback.
 """
 from __future__ import annotations
 
+import json
 import math
 import random
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+
+# Common crypto tickers -> CoinGecko coin ids. CoinGecko is used because,
+# unlike most stock-data providers, its public API works without an API
+# key and isn't blocked by bot-protection on typical sandboxed networks.
+_COINGECKO_IDS = {
+    "BTC": "bitcoin", "BTC-USD": "bitcoin", "XBT": "bitcoin",
+    "ETH": "ethereum", "ETH-USD": "ethereum",
+    "SOL": "solana", "SOL-USD": "solana",
+    "DOGE": "dogecoin", "DOGE-USD": "dogecoin",
+    "ADA": "cardano", "ADA-USD": "cardano",
+    "XRP": "ripple", "XRP-USD": "ripple",
+    "BNB": "binancecoin", "BNB-USD": "binancecoin",
+    "LTC": "litecoin", "LTC-USD": "litecoin",
+    "MATIC": "matic-network", "MATIC-USD": "matic-network",
+    "DOT": "polkadot", "DOT-USD": "polkadot",
+    "AVAX": "avalanche-2", "AVAX-USD": "avalanche-2",
+    "LINK": "chainlink", "LINK-USD": "chainlink",
+}
 
 
 @dataclass
@@ -20,16 +49,30 @@ class Candle:
 
 
 def fetch_history(symbol: str, periods: int = 200) -> list[Candle]:
+    candles, _source = fetch_history_with_source(symbol, periods)
+    return candles
+
+
+def fetch_history_with_source(symbol: str, periods: int = 200) -> tuple[list[Candle], str]:
+    """Return (candles, source) where source is 'yfinance', 'coingecko', or 'synthetic'."""
     try:
-        candles = _fetch_real_history(symbol, periods)
-        if len(candles) < 30:
-            raise ValueError("not enough real data returned")
-        return candles
+        candles = _fetch_stock_history(symbol, periods)
+        if len(candles) >= 30:
+            return candles, "yfinance"
     except Exception:
-        return _synthetic_history(symbol, periods)
+        pass
+
+    try:
+        candles = _fetch_crypto_history(symbol, periods)
+        if len(candles) >= 30:
+            return candles, "coingecko"
+    except Exception:
+        pass
+
+    return _synthetic_history(symbol, periods), "synthetic"
 
 
-def _fetch_real_history(symbol: str, periods: int) -> list[Candle]:
+def _fetch_stock_history(symbol: str, periods: int) -> list[Candle]:
     import yfinance as yf  # optional dependency, imported lazily
 
     data = yf.download(symbol, period="6mo", interval="1d", progress=False)
@@ -37,6 +80,27 @@ def _fetch_real_history(symbol: str, periods: int) -> list[Candle]:
         raise ValueError("no data returned")
     closes = data["Close"].tail(periods)
     return [Candle(index=i, close=float(v)) for i, v in enumerate(closes)]
+
+
+def _fetch_crypto_history(symbol: str, periods: int) -> list[Candle]:
+    coin_id = _COINGECKO_IDS.get(symbol.upper())
+    if coin_id is None:
+        raise ValueError(f"unknown crypto symbol: {symbol}")
+
+    days = max(30, min(periods, 365))
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        f"?vs_currency=usd&days={days}&interval=daily"
+    )
+    request = urllib.request.Request(url, headers={"User-Agent": "daytrader-tool/1.0"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    prices = payload.get("prices", [])
+    if not prices:
+        raise ValueError("no price data returned")
+    closes = [p[1] for p in prices][-periods:]
+    return [Candle(index=i, close=round(float(v), 2)) for i, v in enumerate(closes)]
 
 
 def _synthetic_history(symbol: str, periods: int) -> list[Candle]:
