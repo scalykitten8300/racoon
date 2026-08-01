@@ -154,7 +154,7 @@ def test_run_live_emits_one_line_per_tick(tmp_path, monkeypatch):
     history = [Candle(index=i, close=100.0 + i * 0.1) for i in range(40)]
     prices = iter([100.5, 101.0, 99.5])
 
-    monkeypatch.setattr(live_module, "fetch_history_with_source", lambda symbol: (history, "coingecko"))
+    monkeypatch.setattr(live_module, "fetch_intraday_history_with_source", lambda symbol: (history, "coingecko"))
     monkeypatch.setattr(live_module, "fetch_latest_price", lambda symbol, last_price=None: (next(prices), "coingecko"))
 
     engine = PaperTradingEngine("maryse", starting_balance=1000.0, data_dir=tmp_path)
@@ -168,6 +168,29 @@ def test_run_live_emits_one_line_per_tick(tmp_path, monkeypatch):
     for line in lines[1:]:
         assert "->" in line
         assert "equity=" in line
+
+
+def test_run_live_skips_unchanged_quotes(tmp_path, monkeypatch):
+    from daytrader.market_data import Candle
+
+    history = [Candle(index=i, close=100.0 + i * 0.1) for i in range(40)]
+    # A fresh quote, then the same one repeated - what a provider
+    # returns when polled faster than it refreshes.
+    prices = iter([104.5, 104.5, 104.5])
+
+    monkeypatch.setattr(live_module, "fetch_intraday_history_with_source", lambda symbol: (history, "coingecko"))
+    monkeypatch.setattr(live_module, "fetch_latest_price", lambda symbol, last_price=None: (next(prices), "coingecko"))
+
+    engine = PaperTradingEngine("maryse", starting_balance=1000.0, data_dir=tmp_path)
+    lines = []
+    live_module.run_live(
+        engine, "FAKE", risk_fraction=0.5, interval_seconds=0, iterations=3, on_tick=lines.append,
+    )
+
+    # First quote differs from the warm-up close, so it is a real tick;
+    # the two repeats after it must be reported but not acted on.
+    assert "no new quote" not in lines[1]
+    assert all("no new quote, skipped" in line for line in lines[2:])
 
 
 # --- CLI end-to-end -------------------------------------------------------

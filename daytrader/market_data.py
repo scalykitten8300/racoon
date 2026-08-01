@@ -72,6 +72,63 @@ def fetch_history_with_source(symbol: str, periods: int = 200) -> tuple[list[Can
     return _synthetic_history(symbol, periods), "synthetic"
 
 
+def fetch_intraday_history_with_source(symbol: str, periods: int = 200) -> tuple[list[Candle], str]:
+    """Like ``fetch_history_with_source`` but on an intraday timescale.
+
+    The live loop appends price ticks seconds/minutes apart, so warming
+    it up with daily candles would make the indicators compare a 45s
+    move against a full trading day. This returns ~5-minute bars
+    instead, which is the granularity live ticks actually extend.
+    """
+    try:
+        candles = _fetch_stock_intraday(symbol, periods)
+        if len(candles) >= 30:
+            return candles, "yfinance"
+    except Exception:
+        pass
+
+    try:
+        candles = _fetch_crypto_intraday(symbol, periods)
+        if len(candles) >= 30:
+            return candles, "coingecko"
+    except Exception:
+        pass
+
+    return _synthetic_history(symbol, periods), "synthetic"
+
+
+def _fetch_stock_intraday(symbol: str, periods: int) -> list[Candle]:
+    import yfinance as yf  # optional dependency, imported lazily
+
+    data = yf.download(symbol, period="1d", interval="5m", progress=False)
+    if data is None or data.empty:
+        raise ValueError("no data returned")
+    closes = data["Close"].tail(periods)
+    return [Candle(index=i, close=float(v)) for i, v in enumerate(closes)]
+
+
+def _fetch_crypto_intraday(symbol: str, periods: int) -> list[Candle]:
+    coin_id = _COINGECKO_IDS.get(symbol.upper())
+    if coin_id is None:
+        raise ValueError(f"unknown crypto symbol: {symbol}")
+
+    # days=1 is the only free-tier window that returns ~5-minute bars;
+    # days>=2 downgrades to hourly and days>=90 to daily.
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        f"?vs_currency=usd&days=1"
+    )
+    request = urllib.request.Request(url, headers={"User-Agent": "daytrader-tool/1.0"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    prices = payload.get("prices", [])
+    if not prices:
+        raise ValueError("no price data returned")
+    closes = [p[1] for p in prices][-periods:]
+    return [Candle(index=i, close=round(float(v), 2)) for i, v in enumerate(closes)]
+
+
 def _fetch_stock_history(symbol: str, periods: int) -> list[Candle]:
     import yfinance as yf  # optional dependency, imported lazily
 
