@@ -39,6 +39,12 @@ money is ever involved. It provides:
   reports which source was actually used.
 - **Live mode**: watch the bot poll fresh prices and print every
   BUY/SELL/HOLD decision as it happens (`daytrader/live.py`).
+- **Visual replay**: `daytrader/replay.html` is a standalone page (open it
+  in any browser, no server needed) that replays 90 days of real recorded
+  prices tick by tick and shows every decision, the RSI that triggered it,
+  and the account's value against simply holding. Its JavaScript mirrors
+  `indicators.py` / `strategy.py` / `engine.py` and reproduces their
+  results exactly.
 
 ### Usage
 
