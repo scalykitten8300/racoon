@@ -103,6 +103,59 @@ def _fetch_crypto_history(symbol: str, periods: int) -> list[Candle]:
     return [Candle(index=i, close=round(float(v), 2)) for i, v in enumerate(closes)]
 
 
+def fetch_latest_price(symbol: str, last_price: float | None = None) -> tuple[float, str]:
+    """Return (price, source) for the current/most-recent price of ``symbol``.
+
+    Used by the live-trading loop to poll one fresh tick at a time,
+    as opposed to ``fetch_history`` which pulls a whole historical
+    window for backtesting.
+    """
+    try:
+        return _fetch_stock_latest_price(symbol), "yfinance"
+    except Exception:
+        pass
+
+    try:
+        return _fetch_crypto_latest_price(symbol), "coingecko"
+    except Exception:
+        pass
+
+    return _synthetic_latest_price(symbol, last_price), "synthetic"
+
+
+def _fetch_stock_latest_price(symbol: str) -> float:
+    import yfinance as yf  # optional dependency, imported lazily
+
+    ticker = yf.Ticker(symbol)
+    price = ticker.fast_info.get("last_price")
+    if price is None:
+        raise ValueError("no live price returned")
+    return round(float(price), 2)
+
+
+def _fetch_crypto_latest_price(symbol: str) -> float:
+    coin_id = _COINGECKO_IDS.get(symbol.upper())
+    if coin_id is None:
+        raise ValueError(f"unknown crypto symbol: {symbol}")
+
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+    request = urllib.request.Request(url, headers={"User-Agent": "daytrader-tool/1.0"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    price = payload.get(coin_id, {}).get("usd")
+    if price is None:
+        raise ValueError("no live price returned")
+    return round(float(price), 2)
+
+
+def _synthetic_latest_price(symbol: str, last_price: float | None) -> float:
+    seed = sum(ord(c) for c in symbol.upper()) or 1
+    base = last_price if last_price is not None else 50.0 + (seed % 150)
+    shock = random.gauss(0, base * 0.003)
+    return round(max(0.01, base + shock), 2)
+
+
 def _synthetic_history(symbol: str, periods: int) -> list[Candle]:
     """Deterministic per-symbol synthetic random walk used as an offline fallback."""
     seed = sum(ord(c) for c in symbol.upper()) or 1

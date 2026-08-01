@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import default_data_dir
 from .market_data import fetch_history_with_source
-from .strategy import Signal, generate_signals
+from .strategy import Signal, SignalPoint, generate_signals
 
 
 @dataclass
@@ -58,8 +58,31 @@ class PaperTradingEngine:
         with open(self.path, "w", encoding="utf-8") as fh:
             json.dump(asdict(self.portfolio), fh, indent=2)
 
+    def _execute(self, point: SignalPoint, symbol: str, risk_fraction: float) -> bool:
+        """Fill a single signal against the portfolio. Returns True if a trade happened."""
+        if point.signal is Signal.BUY and self.portfolio.shares == 0:
+            spend = self.portfolio.cash * risk_fraction
+            if spend < 1:
+                return False
+            qty = spend / point.price
+            self.portfolio.cash -= qty * point.price
+            self.portfolio.shares += qty
+            self.portfolio.trades.append(
+                asdict(Trade(point.index, symbol, "BUY", point.price, qty, point.reason))
+            )
+            return True
+        if point.signal is Signal.SELL and self.portfolio.shares > 0:
+            qty = self.portfolio.shares
+            self.portfolio.cash += qty * point.price
+            self.portfolio.shares = 0.0
+            self.portfolio.trades.append(
+                asdict(Trade(point.index, symbol, "SELL", point.price, qty, point.reason))
+            )
+            return True
+        return False
+
     def run_session(self, symbol: str, risk_fraction: float = 0.5) -> dict:
-        """Fetch data, generate signals, and simulate BUY/SELL fills."""
+        """Fetch a historical window, generate signals, and simulate BUY/SELL fills."""
         if not 0 < risk_fraction <= 1:
             raise ValueError("risk_fraction must be between 0 (exclusive) and 1 (inclusive).")
 
@@ -68,23 +91,7 @@ class PaperTradingEngine:
         signals = generate_signals(closes)
 
         for point in signals:
-            if point.signal is Signal.BUY and self.portfolio.shares == 0:
-                spend = self.portfolio.cash * risk_fraction
-                if spend < 1:
-                    continue
-                qty = spend / point.price
-                self.portfolio.cash -= qty * point.price
-                self.portfolio.shares += qty
-                self.portfolio.trades.append(
-                    asdict(Trade(point.index, symbol, "BUY", point.price, qty, point.reason))
-                )
-            elif point.signal is Signal.SELL and self.portfolio.shares > 0:
-                qty = self.portfolio.shares
-                self.portfolio.cash += qty * point.price
-                self.portfolio.shares = 0.0
-                self.portfolio.trades.append(
-                    asdict(Trade(point.index, symbol, "SELL", point.price, qty, point.reason))
-                )
+            self._execute(point, symbol, risk_fraction)
 
         last_price = closes[-1]
         equity = self.portfolio.cash + self.portfolio.shares * last_price
@@ -98,4 +105,38 @@ class PaperTradingEngine:
             "shares": self.portfolio.shares,
             "equity": equity,
             "trades": self.portfolio.trades,
+        }
+
+    def evaluate_latest(self, symbol: str, closes: list[float], risk_fraction: float = 0.5) -> dict:
+        """Evaluate only the newest price tick and act on it if it triggers a signal.
+
+        Used by the live-trading loop: ``closes`` is a rolling window that
+        grows one tick at a time, and only a signal at the very last index
+        is actionable (older signals in the window were already handled on
+        previous ticks).
+        """
+        if not 0 < risk_fraction <= 1:
+            raise ValueError("risk_fraction must be between 0 (exclusive) and 1 (inclusive).")
+
+        last_index = len(closes) - 1
+        point = next((p for p in generate_signals(closes) if p.index == last_index), None)
+
+        action = "HOLD"
+        reason = None
+        if point is not None and self._execute(point, symbol, risk_fraction):
+            action = point.signal.value
+            reason = point.reason
+
+        price = closes[-1]
+        equity = self.portfolio.cash + self.portfolio.shares * price
+        self._save()
+
+        return {
+            "symbol": symbol,
+            "price": price,
+            "action": action,
+            "reason": reason,
+            "cash": self.portfolio.cash,
+            "shares": self.portfolio.shares,
+            "equity": equity,
         }

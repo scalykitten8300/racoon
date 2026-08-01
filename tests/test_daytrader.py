@@ -8,6 +8,7 @@ from daytrader.engine import PaperTradingEngine
 from daytrader.indicators import ema, rsi, sma
 from daytrader.market_data import fetch_history
 from daytrader.strategy import Signal, generate_signals
+from daytrader import live as live_module
 
 
 # --- auth -------------------------------------------------------------
@@ -121,6 +122,52 @@ def test_run_session_rejects_bad_risk_fraction(tmp_path):
     engine = PaperTradingEngine("maryse", starting_balance=10_000.0, data_dir=tmp_path)
     with pytest.raises(ValueError):
         engine.run_session("AAPL", risk_fraction=1.5)
+
+
+def test_evaluate_latest_only_acts_on_last_index(tmp_path):
+    engine = PaperTradingEngine("maryse", starting_balance=1000.0, data_dir=tmp_path)
+    # A rising-then-dipping series so a BUY signal can land on the final tick.
+    closes = [100.0] * 20 + [95, 93, 91, 89, 87, 90, 94, 99, 105, 111]
+    result = engine.evaluate_latest("FAKE", closes, risk_fraction=0.5)
+
+    assert result["price"] == closes[-1]
+    assert result["action"] in ("BUY", "SELL", "HOLD")
+    assert result["equity"] > 0
+
+
+def test_evaluate_latest_holds_without_a_signal(tmp_path):
+    engine = PaperTradingEngine("maryse", starting_balance=1000.0, data_dir=tmp_path)
+    flat = [100.0] * 25
+    result = engine.evaluate_latest("FAKE", flat, risk_fraction=0.5)
+
+    assert result["action"] == "HOLD"
+    assert result["cash"] == 1000.0
+    assert result["shares"] == 0.0
+
+
+# --- live loop ------------------------------------------------------------
+
+
+def test_run_live_emits_one_line_per_tick(tmp_path, monkeypatch):
+    from daytrader.market_data import Candle
+
+    history = [Candle(index=i, close=100.0 + i * 0.1) for i in range(40)]
+    prices = iter([100.5, 101.0, 99.5])
+
+    monkeypatch.setattr(live_module, "fetch_history_with_source", lambda symbol: (history, "coingecko"))
+    monkeypatch.setattr(live_module, "fetch_latest_price", lambda symbol, last_price=None: (next(prices), "coingecko"))
+
+    engine = PaperTradingEngine("maryse", starting_balance=1000.0, data_dir=tmp_path)
+    lines = []
+    live_module.run_live(
+        engine, "FAKE", risk_fraction=0.5, interval_seconds=0, iterations=3, on_tick=lines.append,
+    )
+
+    assert len(lines) == 4  # warm-up line + 3 ticks
+    assert "Warm-up" in lines[0]
+    for line in lines[1:]:
+        assert "->" in line
+        assert "equity=" in line
 
 
 # --- CLI end-to-end -------------------------------------------------------

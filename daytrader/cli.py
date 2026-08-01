@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .auth import AccountManager, AuthError
 from .engine import PaperTradingEngine
+from .live import run_live
 
 
 def _prompt_credentials(args: argparse.Namespace) -> tuple[str, str]:
@@ -76,6 +77,27 @@ def cmd_trade(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live(args: argparse.Namespace) -> int:
+    manager = AccountManager(data_dir=args.data_dir)
+    username, password = _prompt_credentials(args)
+    try:
+        record = manager.authenticate(username, password)
+    except AuthError as exc:
+        print(f"Login failed: {exc}")
+        return 1
+
+    engine = PaperTradingEngine(username, record.starting_balance, data_dir=args.data_dir)
+    print(f"\nLive trading for {username} on {args.symbol} - checking every {args.interval:.0f}s.")
+    print("Every BUY/SELL/HOLD decision is printed as it happens. Ctrl+C to stop (state is saved after every tick).\n")
+    run_live(
+        engine, args.symbol,
+        risk_fraction=args.risk,
+        interval_seconds=args.interval,
+        iterations=args.iterations,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="daytrader",
@@ -103,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
     trade.add_argument("--risk", type=float, default=0.5, help="Fraction of cash to risk per BUY signal.")
     trade.add_argument("--show-trades", type=int, default=10, dest="show_trades")
     trade.set_defaults(func=cmd_trade)
+
+    live = sub.add_parser("live", help="Log in and watch the bot trade in real time, tick by tick.")
+    live.add_argument("--username")
+    live.add_argument("--password")
+    live.add_argument("--symbol", default="BTC")
+    live.add_argument("--risk", type=float, default=0.5, help="Fraction of cash to risk per BUY signal.")
+    live.add_argument("--interval", type=float, default=30.0, help="Seconds between price checks.")
+    live.add_argument(
+        "--iterations", type=int, default=None,
+        help="Stop after N checks (default: run until Ctrl+C).",
+    )
+    live.set_defaults(func=cmd_live)
 
     return parser
 
